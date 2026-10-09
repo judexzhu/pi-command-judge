@@ -1,10 +1,15 @@
 # pi-command-judge
 
+[![npm version](https://img.shields.io/npm/v/pi-command-judge.svg)](https://www.npmjs.com/package/pi-command-judge)
+[![CI](https://github.com/judexzhu/pi-command-judge/actions/workflows/ci.yml/badge.svg)](https://github.com/judexzhu/pi-command-judge/actions)
+
 An `authorizerChain` link for [`@gotgenes/pi-permission-system`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system).
 It reviews the **bash asks your rules leave over** and either **allows** them or **defers** them to you. It never denies.
 
 ```
-bash ask ──► 1. hard-defer rules (deletes, pushes, cluster/cloud mutations, secrets, network, installs, sudo, indirection)
+bash ask ──► 0. fast-allow: deterministic safe reads (git status/diff/log, ls, grep, read-only cluster queries)
+                 └─ match → auto-allow in <1ms without calling model
+         ──► 1. hard-defer rules (deletes, pushes, cluster/cloud mutations, secrets, network, installs, sudo, indirection)
                  └─ match → your prompt, no model call
          ──► 2. script? read it (inside cwd only, ≤64 KB, text) and statically scan it
                  └─ unreadable or risky → your prompt (+ notification saying why)
@@ -17,12 +22,23 @@ Other surfaces (paths, outside-directory, MCP, skills) are untouched: the link d
 
 ## Install
 
+Install via npm into your Pi environment:
+
 ```bash
+npm install -g pi-command-judge
+# or install in Pi:
+pi install npm:pi-command-judge
+```
+
+Or clone and build locally:
+
+```bash
+git clone https://github.com/judexzhu/pi-command-judge.git
 cd pi-command-judge && npm install
-npm test            # 166 deterministic tests, no model needed
+npm test            # 171 deterministic tests, no model needed
 npm run try -- --no-model "oc delete pod x"
-REPEAT=5 TIMEOUT_MS=30000 STRUCTURED=0 npm run try -- "make test"   # latency A/B   # try one command (add BASE_URL/API_KEY for the model)
-pi install ./       # or add the path to "packages" in ~/.pi/agent/settings.json
+REPEAT=5 TIMEOUT_MS=30000 STRUCTURED=0 npm run try -- "make test"   # latency A/B
+pi install ./       # or add to "packages" in ~/.pi/agent/settings.json
 ```
 
 ## Configure
@@ -83,8 +99,8 @@ Check the exact field layout with `head -1` on that file; the core may nest deta
 
 ## Known limits
 
-- Hard rules are regexes, not a shell parser. They split on `; && || | & ( ) { }` and newlines, ignore quoting,
-  and treat `$( )`, backticks, `<( )` and heredocs as hard defers. False positives cost a prompt; that is intended.
+- Control operators (`;`, `&&`, `||`, `|`, `&`, `\n`) are parsed with quote-awareness: pipes and semicolons inside quoted strings (e.g. `grep -E "a|b"`, `git log --grep="x; y"`) are safely preserved. Unquoted operators split into discrete segments for independent validation.
+- Commands with `$( )`, backticks, `<( )` and heredocs trigger hard defers by design.
 - Static script scans catch common patterns (deletes, obfuscation, shelling out with strings, network writes,
   cluster/cloud mutations, SDK mutations). A script that builds commands from variables goes to the model, which is
   told to defer when it can't trace effects. The eval set contains such cases; add your own.
