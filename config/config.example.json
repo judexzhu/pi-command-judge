@@ -1,0 +1,22 @@
+{
+  "provider": "openai-compatible",
+  "model": "Qwen/Qwen2.5-Coder-32B-Instruct",
+  "dryRun": true,
+  "minAllowProbability": 0.9,
+  "requireLogprobs": true,
+  "commandTimeoutMs": 4000,
+  "scriptTimeoutMs": 10000,
+  "maxScriptBytes": 65536,
+  "extraBody": {
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    }
+  },
+  "extraHardDefer": [
+    "^make\\s+(deploy|release|publish)\\b"
+  ],
+  "notifyOnDefer": true,
+  "policy": null,
+  "structuredOutput": true,
+  "warmup": true
+}

@@ -1,0 +1,42 @@
+{
+  "name": "pi-command-judge",
+  "version": "0.1.0",
+  "description": "Allow-or-defer model judge for pi-permission-system: hard-defers deletes and customer-environment mutations, reviews leftover bash asks and scripts with an internal model.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "files": [
+    "src/",
+    "config/config.example.json",
+    "README.md",
+    "LICENSE",
+    "GLOSSARY.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "eval": "node --experimental-strip-types evals/run-evals.ts",
+    "try": "node --experimental-strip-types evals/try.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.0.0",
+    "@gotgenes/pi-permission-system": ">=40.0.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.1.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "dependencies": {
+    "@gotgenes/pi-permission-system": "^40.1.1"
+  }
+}

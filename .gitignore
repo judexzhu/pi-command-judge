@@ -1,0 +1,5 @@
+node_modules/
+.pi/tasks/
+.codegraph/
+*.log
+.DS_Store
