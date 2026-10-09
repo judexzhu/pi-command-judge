@@ -39,6 +39,7 @@ export type JudgeFn = (call: JudgeCall) => Promise<JudgeResult>;
 export interface EndpointConfig {
   baseUrl: string;
   modelId: string;
+  api?: "openai-completions" | "openai-responses";
   apiKey?: string;
   headers?: Record<string, string>;
   extraBody: Record<string, unknown>;
@@ -52,53 +53,124 @@ interface LogprobEntry {
   top_logprobs?: Array<{ token: string; logprob: number }>;
 }
 
+interface ProtocolStrategy {
+  path: string;
+  buildBody(endpoint: EndpointConfig, call: JudgeCall): Record<string, unknown>;
+  extract(resJson: unknown): { raw: string; logprobs?: LogprobEntry[] };
+}
+
+const chatCompletionsStrategy: ProtocolStrategy = {
+  path: "/chat/completions",
+  buildBody(endpoint, call) {
+    return {
+      model: endpoint.modelId,
+      temperature: 0,
+      max_tokens: call.maxTokens,
+      logprobs: true,
+      top_logprobs: 5,
+      ...(endpoint.structuredOutput === false
+        ? {}
+        : {
+            response_format: {
+              type: "json_schema",
+              json_schema: { name: "verdict", schema: call.schema, strict: true },
+            },
+          }),
+      messages: [
+        { role: "system", content: call.system },
+        { role: "user", content: call.user },
+      ],
+      ...endpoint.extraBody,
+    };
+  },
+  extract(resJson) {
+    const body = resJson as {
+      choices?: Array<{ message?: { content?: string }; logprobs?: { content?: LogprobEntry[] } }>;
+    };
+    const choice = body.choices?.[0];
+    return {
+      raw: choice?.message?.content ?? "",
+      logprobs: choice?.logprobs?.content,
+    };
+  },
+};
+
+const responsesStrategy: ProtocolStrategy = {
+  path: "/responses",
+  buildBody(endpoint, call) {
+    return {
+      model: endpoint.modelId,
+      temperature: 0,
+      instructions: call.system,
+      input: call.user,
+      max_output_tokens: call.maxTokens,
+      top_logprobs: 5,
+      include: ["message.output_text.logprobs"],
+      ...(endpoint.structuredOutput === false
+        ? {}
+        : {
+            text: {
+              format: {
+                type: "json_schema",
+                name: "verdict",
+                strict: true,
+                schema: call.schema,
+              },
+            },
+          }),
+      ...endpoint.extraBody,
+    };
+  },
+  extract(resJson) {
+    const body = resJson as {
+      output?: Array<{
+        type?: string;
+        content?: Array<{
+          type?: string;
+          text?: string;
+          logprobs?: LogprobEntry[];
+        }>;
+      }>;
+    };
+    const messageItem = body.output?.find((item) => item.type === "message") ?? body.output?.[0];
+    const textContent = messageItem?.content?.find((c) => c.type === "output_text") ?? messageItem?.content?.[0];
+    return {
+      raw: textContent?.text ?? "",
+      logprobs: textContent?.logprobs,
+    };
+  },
+};
+
 export function createJudge(endpoint: EndpointConfig): JudgeFn {
-  const url = `${endpoint.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+  const strategy = endpoint.api === "openai-responses" ? responsesStrategy : chatCompletionsStrategy;
+  const url = `${endpoint.baseUrl.replace(/\/+$/, "")}${strategy.path}`;
+
   return async (call) => {
     const started = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), call.timeoutMs);
     try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...(endpoint.apiKey ? { Authorization: `Bearer ${endpoint.apiKey}` } : {}),
+        ...(endpoint.headers ?? {}),
+      };
+
       const res = await fetch(url, {
         method: "POST",
         signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          ...(endpoint.apiKey ? { Authorization: `Bearer ${endpoint.apiKey}` } : {}),
-          ...(endpoint.headers ?? {}),
-        },
-        body: JSON.stringify({
-          model: endpoint.modelId,
-          temperature: 0,
-          max_tokens: call.maxTokens,
-          logprobs: true,
-          top_logprobs: 5,
-          ...(endpoint.structuredOutput === false
-            ? {}
-            : {
-                response_format: {
-                  type: "json_schema",
-                  json_schema: { name: "verdict", schema: call.schema, strict: true },
-                },
-              }),
-          messages: [
-            { role: "system", content: call.system },
-            { role: "user", content: call.user },
-          ],
-          ...endpoint.extraBody,
-        }),
+        headers,
+        body: JSON.stringify(strategy.buildBody(endpoint, call)),
       });
       const latencyMs = Date.now() - started;
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         return { ok: false, error: "http", detail: `${res.status} ${text.slice(0, 300)}`, latencyMs };
       }
-      const body = (await res.json()) as {
-        choices?: Array<{ message?: { content?: string }; logprobs?: { content?: LogprobEntry[] } }>;
-      };
-      const choice = body.choices?.[0];
-      const raw = choice?.message?.content ?? "";
-      return { ...parseVerdict(raw, choice?.logprobs?.content), latencyMs, raw } as JudgeResult;
+
+      const resJson = await res.json();
+      const { raw, logprobs } = strategy.extract(resJson);
+      return { ...parseVerdict(raw, logprobs), latencyMs, raw } as JudgeResult;
     } catch (err) {
       const latencyMs = Date.now() - started;
       if (controller.signal.aborted) return { ok: false, error: "timeout", detail: `>${call.timeoutMs}ms`, latencyMs };

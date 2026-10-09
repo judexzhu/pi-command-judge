@@ -171,3 +171,92 @@ describe("parseConfig", () => {
     expect(r.config?.minAllowProbability).toBe(DEFAULT_CONFIG.minAllowProbability);
   });
 });
+
+describe("createJudge", () => {
+  it("calls /chat/completions for openai-completions", async () => {
+    let capturedUrl = "";
+    let capturedBody: any;
+    const fetchMock = vi.fn().mockImplementation(async (url, init) => {
+      capturedUrl = String(url);
+      capturedBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: '{"decision":"allow","reason":"safe"}' } }],
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { createJudge } = await import("../src/judge-client.ts");
+    const judge = createJudge({
+      baseUrl: "https://api.example.com/v1",
+      modelId: "test-model",
+      api: "openai-completions",
+      extraBody: {},
+    });
+
+    const res = await judge({
+      system: "sys",
+      user: "usr",
+      schema: {},
+      maxTokens: 100,
+      timeoutMs: 5000,
+    });
+
+    expect(capturedUrl).toBe("https://api.example.com/v1/chat/completions");
+    expect(capturedBody.messages).toBeDefined();
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.decision).toBe("allow");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("calls /responses for openai-responses", async () => {
+    let capturedUrl = "";
+    let capturedBody: any;
+    const fetchMock = vi.fn().mockImplementation(async (url, init) => {
+      capturedUrl = String(url);
+      capturedBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        json: async () => ({
+          output: [
+            {
+              type: "message",
+              content: [{ type: "output_text", text: '{"decision":"allow","reason":"safe"}' }],
+            },
+          ],
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { createJudge } = await import("../src/judge-client.ts");
+    const judge = createJudge({
+      baseUrl: "https://api.openai.com/v1",
+      modelId: "gpt-4.1-mini",
+      api: "openai-responses",
+      extraBody: {},
+    });
+
+    const res = await judge({
+      system: "sys",
+      user: "usr",
+      schema: {},
+      maxTokens: 100,
+      timeoutMs: 5000,
+    });
+
+    expect(capturedUrl).toBe("https://api.openai.com/v1/responses");
+    expect(capturedBody.instructions).toBe("sys");
+    expect(capturedBody.input).toBe("usr");
+    expect(capturedBody.include).toEqual(["message.output_text.logprobs"]);
+    expect(capturedBody.text?.format?.type).toBe("json_schema");
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.decision).toBe("allow");
+
+    vi.unstubAllGlobals();
+  });
+});
+

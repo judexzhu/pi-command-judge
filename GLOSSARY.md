@@ -17,3 +17,7 @@ A deterministic, low-latency (<1ms) auto-allow for safe read-only queries (e.g. 
 
 ### Model Allow
 An automated approval granted only after an internal model evaluates the command/script, confirms safe effects, and passes confidence threshold $P(\text{allow}) \ge 0.90$.
+
+### Judge Protocol Adapter
+A wire-protocol adapter in the Judge Client isolating transport payload construction, structured output schema flags, and logprob extraction across differing model provider protocols (e.g. `openai-completions` and `openai-responses`).
+

@@ -125,7 +125,9 @@ export default function commandJudgeExtension(pi: ExtensionAPI): void {
   async function resolveJudge(cfg: CommandJudgeConfig): Promise<{ judge: JudgeFn } | { error: string }> {
     const model = registry?.find(cfg.provider, cfg.model);
     if (!model) return { error: "model-unresolved" };
-    if (model.api !== "openai-completions") return { error: `unsupported-api:${model.api}` };
+    if (model.api !== "openai-completions" && model.api !== "openai-responses") {
+      return { error: `unsupported-api:${model.api}` };
+    }
     const auth = await registry!.getApiKeyAndHeaders(model);
     if (!auth.ok) return { error: "auth-failed" };
     const baseUrl = cfg.baseUrl ?? auth.baseUrl ?? model.baseUrl;
@@ -140,6 +142,7 @@ export default function commandJudgeExtension(pi: ExtensionAPI): void {
       judge: createJudge({
         baseUrl,
         modelId: model.id,
+        api: model.api,
         apiKey,
         headers: auth.headers,
         extraBody: cfg.extraBody,
