@@ -6,6 +6,7 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 
+import type { HardDeferConfig } from "./config.ts";
 import { checkSegment, type HardDeferHit, normalizeSegment, splitSegments } from "./hard-defer.ts";
 
 export interface ScriptRef {
@@ -79,26 +80,35 @@ const SDK_IMPORT = /\b(import|from|require\()\s*['"]?(boto3|botocore|kubernetes|
 const SDK_MUTATION = /\b(create|delete|patch|replace|update|put|terminate|stop|start|modify|attach|detach|reboot|scale)_[a-z_]+\s*\(|\.(create|delete|patch|replace|update|terminate|stop|start|modify)[A-Z]\w*\s*\(|new\s+(Put|Delete|Create|Update|Terminate|Modify)\w*Command\s*\(/;
 
 /** Statically scan script content. Shell scripts also get the per-line command rules. */
-export function scanScript(ref: ScriptRef, content: string, extra: readonly RegExp[] = []): HardDeferHit | null {
+export function scanScript(
+  ref: ScriptRef,
+  content: string,
+  extra: readonly RegExp[] = [],
+  config?: HardDeferConfig,
+): HardDeferHit | null {
   const isShell = /\.(sh|bash|zsh)$/.test(ref.path) || ["bash", "sh", "zsh"].includes(ref.interpreter);
   if (isShell) {
     for (const line of content.split(/\r?\n/)) {
       const code = line.replace(/(^|\s)#.*$/, "").trim();
       if (!code) continue;
-      if (/\$\(|`|<\(|>\(|\beval\b/.test(code)) return { rule: "script-indirection", segment: code };
+      // In scripts, command substitutions $(...) and process substitutions are part of the
+      // script text that the model inspects in full; only check static segment rules.
       for (const raw of splitSegments(code)) {
-        const hit = checkSegment(normalizeSegment(raw), extra);
+        const hit = checkSegment(normalizeSegment(raw), extra, config);
         if (hit) return { rule: `script:${hit.rule}`, segment: hit.segment };
       }
     }
   }
   for (const [rule, re] of SCRIPT_RULES) {
+    if (config?.disabledRules?.includes(rule)) continue;
     const m = re.exec(content);
     if (m) return { rule, segment: lineAround(content, m.index) };
   }
   if (SDK_IMPORT.test(content)) {
-    const m = SDK_MUTATION.exec(content);
-    if (m) return { rule: "script-sdk-mutation", segment: lineAround(content, m.index) };
+    if (!config?.disabledRules?.includes("script-sdk-mutation") && config?.categories?.cloud !== false && config?.categories?.k8s !== false) {
+      const m = SDK_MUTATION.exec(content);
+      if (m) return { rule: "script-sdk-mutation", segment: lineAround(content, m.index) };
+    }
   }
   return null;
 }

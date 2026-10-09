@@ -33,6 +33,14 @@ export interface PromptInput {
   cwd: string;
   command: string;
   script?: { path: string; content: string };
+  customInstructions?: string | null;
+}
+
+/** Compose effective system policy from default, custom override, and extra policy. */
+export function composePolicy(basePolicy: string | null | undefined, extraPolicy: string | null | undefined): string {
+  const base = basePolicy?.trim() || DEFAULT_POLICY;
+  if (!extraPolicy || !extraPolicy.trim()) return base;
+  return `${base}\n\nADDITIONAL RULES & CONTEXT:\n${extraPolicy.trim()}`;
 }
 
 export function renderUserPrompt(input: PromptInput): string {
@@ -44,6 +52,9 @@ export function renderUserPrompt(input: PromptInput): string {
     input.command,
     "</command>",
   ];
+  if (input.customInstructions && input.customInstructions.trim()) {
+    parts.push("", "Additional instructions:", input.customInstructions.trim());
+  }
   if (input.script) {
     parts.push(
       "",

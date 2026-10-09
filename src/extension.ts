@@ -13,11 +13,11 @@ import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent"
 import type { Authorizer, PermissionsReadyEvent } from "@gotgenes/pi-permission-system";
 import { getPermissionsService, PERMISSIONS_READY_CHANNEL } from "@gotgenes/pi-permission-system";
 
-import { loadConfig, type CommandJudgeConfig } from "./config.ts";
+import { loadConfig, resolveTextOrFile, type CommandJudgeConfig } from "./config.ts";
 import { decide, summarize } from "./decide.ts";
 import { compileExtra } from "./hard-defer.ts";
 import { createJudge, type JudgeFn } from "./judge-client.ts";
-import { DEFAULT_POLICY, renderUserPrompt, verdictSchema } from "./prompt.ts";
+import { composePolicy, renderUserPrompt, verdictSchema } from "./prompt.ts";
 import { readScriptSafely } from "./scripts.ts";
 
 export const LINK_NAME = "command-judge";
@@ -160,19 +160,22 @@ export default function commandJudgeExtension(pi: ExtensionAPI): void {
     const resolved = await resolveJudge(cfg).catch(() => ({ error: "warmup-failed" }));
     if ("error" in resolved) return;
     judge = resolved.judge;
-    const system = cfg.policy ?? DEFAULT_POLICY;
+    const basePolicy = resolveTextOrFile(cfg.policy, cwd);
+    const extraPolicy = resolveTextOrFile(cfg.extraPolicy, cwd);
+    const system = composePolicy(basePolicy, extraPolicy);
+    const customInstructions = resolveTextOrFile(cfg.customPromptInstructions, cwd);
     const started = Date.now();
     await Promise.allSettled([
       resolved.judge({
         system,
-        user: renderUserPrompt({ cwd, command: "ls" }),
+        user: renderUserPrompt({ cwd, command: "ls", customInstructions }),
         schema: verdictSchema(false),
         maxTokens: cfg.maxTokensCommand,
         timeoutMs: 60000,
       }),
       resolved.judge({
         system,
-        user: renderUserPrompt({ cwd, command: "python3 warm.py", script: { path: "warm.py", content: "print('ok')" } }),
+        user: renderUserPrompt({ cwd, command: "python3 warm.py", script: { path: "warm.py", content: "print('ok')" }, customInstructions }),
         schema: verdictSchema(true),
         maxTokens: cfg.maxTokensScript,
         timeoutMs: 60000,

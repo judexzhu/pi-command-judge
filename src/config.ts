@@ -4,7 +4,29 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+
+export interface HardDeferCategories {
+  deletion?: boolean;
+  gitRemote?: boolean;
+  privilege?: boolean;
+  substitutions?: boolean;
+  indirection?: boolean;
+  secrets?: boolean;
+  k8s?: boolean;
+  cloud?: boolean;
+  network?: boolean;
+  packages?: boolean;
+  database?: boolean;
+  system?: boolean;
+}
+
+export interface HardDeferConfig {
+  enabled?: boolean;
+  categories?: HardDeferCategories;
+  disabledRules?: string[];
+}
 
 export interface CommandJudgeConfig {
   /** Pi model registry provider, e.g. "openai-compatible". */
@@ -24,8 +46,14 @@ export interface CommandJudgeConfig {
   extraBody: Record<string, unknown>;
   /** Extra hard-defer regexes, applied to each normalized command segment and shell-script line. */
   extraHardDefer: string[];
-  /** Replace the default policy text. */
+  /** Replace the default policy text (string or file path). */
   policy: string | null;
+  /** Additional rules appended to the policy (string or file path). */
+  extraPolicy: string | null;
+  /** Custom user instructions injected into the prompt. */
+  customPromptInstructions: string | null;
+  /** Configurable hard-defer settings. */
+  hardDefer: HardDeferConfig;
   /** Show a notification with the judge's reason when it defers a script or command. */
   notifyOnDefer: boolean;
   /** Log what it would allow, but always defer. */
@@ -53,6 +81,13 @@ export const DEFAULT_CONFIG: CommandJudgeConfig = {
   extraBody: { chat_template_kwargs: { enable_thinking: false } },
   extraHardDefer: [],
   policy: null,
+  extraPolicy: null,
+  customPromptInstructions: null,
+  hardDefer: {
+    enabled: true,
+    categories: {},
+    disabledRules: [],
+  },
   notifyOnDefer: true,
   dryRun: true,
   structuredOutput: true,
@@ -148,9 +183,52 @@ export function parseConfig(raw: unknown): { config: CommandJudgeConfig | undefi
     if (input[k] === null || (typeof input[k] === "string" && input[k])) out[k] = input[k] as string | null;
     else issues.push(`${k} must be a non-empty string or null`);
   }
-  if (input.policy !== undefined) {
-    if (input.policy === null || typeof input.policy === "string") out.policy = input.policy as string | null;
-    else issues.push("policy must be a string or null");
+  for (const k of ["policy", "extraPolicy", "customPromptInstructions"] as const) {
+    if (input[k] !== undefined) {
+      if (input[k] === null || typeof input[k] === "string") out[k] = input[k] as string | null;
+      else issues.push(`${k} must be a string or null`);
+    }
   }
+
+  if (input.hardDefer !== undefined) {
+    if (typeof input.hardDefer === "object" && input.hardDefer !== null && !Array.isArray(input.hardDefer)) {
+      const hd = input.hardDefer as Record<string, unknown>;
+      const conf: HardDeferConfig = { ...DEFAULT_CONFIG.hardDefer };
+      if (hd.enabled !== undefined) {
+        if (typeof hd.enabled === "boolean") conf.enabled = hd.enabled;
+        else issues.push("hardDefer.enabled must be a boolean");
+      }
+      if (hd.disabledRules !== undefined) {
+        if (Array.isArray(hd.disabledRules) && hd.disabledRules.every((r) => typeof r === "string")) {
+          conf.disabledRules = hd.disabledRules as string[];
+        } else issues.push("hardDefer.disabledRules must be an array of rule strings");
+      }
+      if (hd.categories !== undefined) {
+        if (typeof hd.categories === "object" && hd.categories !== null && !Array.isArray(hd.categories)) {
+          conf.categories = hd.categories as HardDeferCategories;
+        } else issues.push("hardDefer.categories must be an object");
+      }
+      out.hardDefer = conf;
+    } else issues.push("hardDefer must be an object");
+  }
+
   return { config: out, issues };
+}
+
+/** Resolve string or file path into text content. */
+export function resolveTextOrFile(textOrPath: string | null | undefined, baseDir = process.cwd()): string | null {
+  if (!textOrPath) return null;
+  const trimmed = textOrPath.trim();
+  if (!trimmed.includes("\n") && (trimmed.endsWith(".md") || trimmed.endsWith(".txt") || trimmed.startsWith("./") || trimmed.startsWith("../") || trimmed.startsWith("/") || trimmed.startsWith("~/"))) {
+    const expanded = trimmed.startsWith("~/") ? join(homedir(), trimmed.slice(2)) : trimmed;
+    const abs = isAbsolute(expanded) ? expanded : resolve(baseDir, expanded);
+    if (existsSync(abs)) {
+      try {
+        return readFileSync(abs, "utf8").trim();
+      } catch {
+        // Fall back to literal text
+      }
+    }
+  }
+  return trimmed;
 }

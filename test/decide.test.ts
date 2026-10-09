@@ -170,6 +170,25 @@ describe("parseConfig", () => {
     expect(r.issues).toHaveLength(2);
     expect(r.config?.minAllowProbability).toBe(DEFAULT_CONFIG.minAllowProbability);
   });
+  it("parses hardDefer and custom policy options", () => {
+    const r = parseConfig({
+      policy: "custom policy",
+      extraPolicy: "extra rules",
+      customPromptInstructions: "extra instructions",
+      hardDefer: {
+        enabled: false,
+        disabledRules: ["kube-mutation"],
+        categories: { k8s: false },
+      },
+    });
+    expect(r.issues).toHaveLength(0);
+    expect(r.config?.policy).toBe("custom policy");
+    expect(r.config?.extraPolicy).toBe("extra rules");
+    expect(r.config?.customPromptInstructions).toBe("extra instructions");
+    expect(r.config?.hardDefer.enabled).toBe(false);
+    expect(r.config?.hardDefer.disabledRules).toEqual(["kube-mutation"]);
+    expect(r.config?.hardDefer.categories?.k8s).toBe(false);
+  });
 });
 
 describe("createJudge", () => {

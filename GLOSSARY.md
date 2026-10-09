@@ -21,3 +21,10 @@ An automated approval granted only after an internal model evaluates the command
 ### Judge Protocol Adapter
 A wire-protocol adapter in the Judge Client isolating transport payload construction, structured output schema flags, and logprob extraction across differing model provider protocols (e.g. `openai-completions` and `openai-responses`).
 
+### Configurable Hard Defer
+A rule or category in the static screening tier that an operator can selectively disable in configuration, allowing matching commands to proceed to the model judge rather than triggering an unconditional human prompt.
+
+### Policy Extension
+An additive prompt fragment (`extraPolicy` or `customPromptInstructions`) merged into the baseline policy or user prompt without discarding upstream safety constraints.
+
+

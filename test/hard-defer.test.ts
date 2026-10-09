@@ -101,6 +101,19 @@ const MUST_DEFER: string[] = [
   "chown root x",
   "docker push quay.io/x/y",
   "podman exec -it c sh",
+  // community / industry standards additions
+  ":(){ :|:& };:",
+  "dd if=/dev/zero of=/dev/sda bs=1M",
+  "echo zero > /dev/sda",
+  "mkfs.ext4 /dev/nvme0n1",
+  "wipefs -a /dev/sda",
+  "docker run -v /var/run/docker.sock:/var/run/docker.sock alpine",
+  "psql -d prod -c 'DROP DATABASE customer_db'",
+  "mysql -u root -e 'DROP TABLE users'",
+  "redis-cli flushall",
+  "cat ~/.ssh/id_rsa",
+  "head -n 5 ~/.aws/credentials",
+  "grep -i token ~/.env",
 ];
 
 const NOT_HARD: string[] = [
@@ -200,7 +213,6 @@ describe("scanScript", () => {
     [py, "import requests\nrequests.post(url, json=data)"],
     [py, "from kubernetes import client\nv1.delete_namespaced_pod(name, ns)"],
     [py, "import boto3\nec2.terminate_instances(InstanceIds=ids)"],
-    [sh, "#!/bin/bash\nfor p in $(oc get pods -o name); do echo $p; done"],
     [sh, "set -e\noc get pods\noc delete pod stale"],
     [sh, "rm -f /tmp/out"],
   ])("flags %#", (ref, content) => {
@@ -210,7 +222,30 @@ describe("scanScript", () => {
     [py, "import json\nprint(json.dumps({'a': 1}))"],
     [py, "import subprocess\nout = subprocess.run(['oc', 'get', 'pods', '-o', 'json'], capture_output=True)"],
     [sh, "#!/bin/bash\nset -euo pipefail\noc get nodes -o wide\noc get co\n# delete nothing"],
+    [sh, "#!/bin/bash\nCURRENT=$(git rev-parse HEAD)\necho $CURRENT"],
   ])("passes %#", (ref, content) => {
     expect(scanScript(ref, content)).toBeNull();
   });
 });
+
+describe("hardDefer configuration", () => {
+  it("allows disabled rules to pass hard defer", () => {
+    const cmd = "oc delete pod x";
+    expect(findHardDefer(cmd)).not.toBeNull();
+    expect(findHardDefer(cmd, [], { disabledRules: ["kube-mutation"] })).toBeNull();
+  });
+
+  it("allows disabled categories to pass hard defer", () => {
+    const cmd = "oc delete pod x";
+    expect(findHardDefer(cmd, [], { categories: { k8s: false } })).toBeNull();
+    const pkg = "npm install foo";
+    expect(findHardDefer(pkg, [], { categories: { packages: false } })).toBeNull();
+  });
+
+  it("bypasses all rules when enabled is false, keeping only extra rules", () => {
+    const cmd = "rm -rf /tmp/test";
+    expect(findHardDefer(cmd, [], { enabled: false })).toBeNull();
+    expect(findHardDefer(cmd, [/^rm\b/], { enabled: false })).toMatchObject({ rule: "extra:^rm\\b" });
+  });
+});
+

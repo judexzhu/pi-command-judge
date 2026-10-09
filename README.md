@@ -95,7 +95,11 @@ Check the exact field layout with `head -1` on that file; the core may nest deta
 | `warmup` | `true` | Two throwaway calls at session start, so the first real ask doesn't pay grammar-compile or connection costs. |
 | `baseUrl` | `null` | Override the endpoint Pi resolves, e.g. to bypass a local proxy. Every decision logs the `endpoint` host it used. |
 | `apiKeyEnv` | `null` | Take the API key from this env var instead of Pi's credentials. |
-| `policy` | built-in | Replace the policy text the model sees (`src/prompt.ts`). |
+| `policy` | built-in | Replace the policy text the model sees (string or file path). |
+| `extraPolicy` | `null` | Additional rules appended to the base policy (string or file path). |
+| `customPromptInstructions` | `null` | Custom instructions injected into user prompt context (string or file path). |
+| `hardDefer` | enabled | Fine-grained hard-defer control: `categories` toggles (`deletion`, `k8s`, `cloud`, `gitRemote`, `packages`, `privilege`, `network`, `database`, `system`, etc.) and `disabledRules` array. See [docs/hard-defer-rules.md](docs/hard-defer-rules.md) for full descriptions. |
+
 
 ## Known limits
 

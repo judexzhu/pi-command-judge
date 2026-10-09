@@ -9,11 +9,11 @@
  * The pipeline never denies: the worst case is the normal prompt.
  */
 
-import type { CommandJudgeConfig } from "./config.ts";
+import { resolveTextOrFile, type CommandJudgeConfig } from "./config.ts";
 import { isFastAllowable } from "./fast-allow.ts";
 import { findHardDefer } from "./hard-defer.ts";
 import type { Effects, JudgeFn } from "./judge-client.ts";
-import { DEFAULT_POLICY, renderUserPrompt, verdictSchema } from "./prompt.ts";
+import { composePolicy, renderUserPrompt, verdictSchema } from "./prompt.ts";
 import { detectScript, type ReadScriptResult, type ScriptRef, scanScript } from "./scripts.ts";
 
 export interface DecideInput {
@@ -49,7 +49,7 @@ export interface Decision {
 export async function decide(input: DecideInput, deps: DecideDeps): Promise<Decision> {
   const { config } = deps;
 
-  const hard = findHardDefer(input.command, deps.extraHardDefer);
+  const hard = findHardDefer(input.command, deps.extraHardDefer, config.hardDefer);
   if (hard) {
     return { verdict: "defer", stage: "hard-defer", reason: `hard:${hard.rule}`, detail: hard.segment };
   }
@@ -69,7 +69,7 @@ export async function decide(input: DecideInput, deps: DecideDeps): Promise<Deci
     if (!read.ok) {
       return { verdict: "defer", stage: "script", reason: `script-unreadable:${read.reason}`, detail: ref.path };
     }
-    const hit = scanScript(ref, read.content, deps.extraHardDefer);
+    const hit = scanScript(ref, read.content, deps.extraHardDefer, config.hardDefer);
     if (hit) {
       return {
         verdict: "defer",
@@ -82,9 +82,14 @@ export async function decide(input: DecideInput, deps: DecideDeps): Promise<Deci
     script = { path: read.path, content: read.content };
   }
 
+  const basePolicy = resolveTextOrFile(config.policy, input.cwd);
+  const extraPolicy = resolveTextOrFile(config.extraPolicy, input.cwd);
+  const effectiveSystemPolicy = composePolicy(basePolicy, extraPolicy);
+  const customInstructions = resolveTextOrFile(config.customPromptInstructions, input.cwd);
+
   const result = await deps.judge({
-    system: config.policy ?? DEFAULT_POLICY,
-    user: renderUserPrompt({ cwd: input.cwd, command: input.command, script }),
+    system: effectiveSystemPolicy,
+    user: renderUserPrompt({ cwd: input.cwd, command: input.command, script, customInstructions }),
     schema: verdictSchema(script !== undefined),
     maxTokens: script ? config.maxTokensScript : config.maxTokensCommand,
     timeoutMs: script ? config.scriptTimeoutMs : config.commandTimeoutMs,

@@ -1,6 +1,6 @@
 {
   "name": "pi-command-judge",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Allow-or-defer model judge for pi-permission-system: hard-defers deletes and customer-environment mutations, reviews leftover bash asks and scripts with an internal model.",
   "type": "module",
   "license": "MIT",
@@ -10,7 +10,8 @@
     "config/config.example.json",
     "README.md",
     "LICENSE",
-    "GLOSSARY.md"
+    "GLOSSARY.md",
+    "docs/"
   ],
   "engines": {
     "node": ">=22"

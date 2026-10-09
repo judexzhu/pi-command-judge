@@ -7,16 +7,42 @@
   "commandTimeoutMs": 4000,
   "scriptTimeoutMs": 10000,
   "maxScriptBytes": 65536,
+  "maxTokensCommand": 150,
+  "maxTokensScript": 500,
+  "baseUrl": null,
+  "apiKeyEnv": null,
   "extraBody": {
     "chat_template_kwargs": {
       "enable_thinking": false
     }
   },
+  "policy": null,
+  "extraPolicy": null,
+  "customPromptInstructions": null,
+  "hardDefer": {
+    "enabled": true,
+    "categories": {
+      "deletion": true,
+      "substitutions": true,
+      "privilege": true,
+      "indirection": true,
+      "gitRemote": true,
+      "k8s": true,
+      "cloud": true,
+      "secrets": true,
+      "network": true,
+      "packages": true,
+      "database": true,
+      "system": true
+    },
+    "disabledRules": [
+      "kube-secrets"
+    ]
+  },
   "extraHardDefer": [
     "^make\\s+(deploy|release|publish)\\b"
   ],
   "notifyOnDefer": true,
-  "policy": null,
   "structuredOutput": true,
   "warmup": true
 }
