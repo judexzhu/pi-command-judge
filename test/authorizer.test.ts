@@ -902,4 +902,265 @@ describe("authorizer seam and forwarded ask command extraction", () => {
       );
     });
   });
+
+  describe("subagent provenance in decision audit logs", () => {
+    it("records agentName and requesterSessionId for forwarded asks on fast-allow", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({ config: LIVE_CONFIG });
+      const ask = createAsk({
+        command: undefined,
+        surface: "bash",
+        value: "git status",
+        agentName: "reviewer",
+        forwarding: {
+          requesterAgentName: "reviewer",
+          requesterSessionId: "session-xyz",
+        },
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "git status",
+          verdict: "allow",
+          stage: "fast-allow",
+          agentName: "reviewer",
+          requesterSessionId: "session-xyz",
+        }),
+      );
+    });
+
+    it("records agentName and requesterSessionId for forwarded asks on hard-defer", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({ config: LIVE_CONFIG });
+      const ask = createAsk({
+        command: undefined,
+        surface: "bash",
+        value: "rm -rf /",
+        agentName: "reviewer",
+        forwarding: {
+          requesterAgentName: "reviewer",
+          requesterSessionId: "session-xyz",
+        },
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "defer" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "rm -rf /",
+          verdict: "defer",
+          stage: "hard-defer",
+          agentName: "reviewer",
+          requesterSessionId: "session-xyz",
+        }),
+      );
+    });
+
+    it("records agentName and requesterSessionId for forwarded asks on model evaluation", async () => {
+      const log = createMockLog();
+      const judge = vi.fn(async () => ({
+        ok: true as const,
+        decision: "allow" as const,
+        reason: "safe cargo build",
+        pAllow: 0.95,
+        latencyMs: 15,
+        raw: "{}",
+      }));
+      const authorize = createAuthorizer({ config: LIVE_CONFIG, judge });
+      const ask = createAsk({
+        command: undefined,
+        surface: "bash",
+        value: "cargo build",
+        agentName: "reviewer",
+        forwarding: {
+          requesterAgentName: "reviewer",
+          requesterSessionId: "session-xyz",
+        },
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "cargo build",
+          verdict: "allow",
+          stage: "model",
+          agentName: "reviewer",
+          requesterSessionId: "session-xyz",
+        }),
+      );
+    });
+
+    it("records null agentName and null requesterSessionId for direct parent asks", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({ config: LIVE_CONFIG });
+      const ask = createAsk({
+        command: "git status",
+        surface: "bash",
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "git status",
+          verdict: "allow",
+          agentName: null,
+          requesterSessionId: null,
+        }),
+      );
+    });
+
+    it("records null for missing or undefined agentName on direct parent asks", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({ config: LIVE_CONFIG });
+      const ask = createAsk({
+        command: "git status",
+        surface: "bash",
+        agentName: undefined as any,
+        forwarding: undefined,
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "git status",
+          verdict: "allow",
+          agentName: null,
+          requesterSessionId: null,
+        }),
+      );
+    });
+
+    it("records subagent provenance when resolveJudge returns an error", async () => {
+      const log = createMockLog();
+      const resolveJudge = vi.fn(async () => ({ error: "auth-failed" }));
+      const authorize = createAuthorizer({ config: LIVE_CONFIG, resolveJudge });
+      const ask = createAsk({
+        command: undefined,
+        surface: "bash",
+        value: "cargo build",
+        agentName: "reviewer",
+        forwarding: {
+          requesterAgentName: "reviewer",
+          requesterSessionId: "session-xyz",
+        },
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "defer" });
+      expect(resolveJudge).toHaveBeenCalled();
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "cargo build",
+          verdict: "defer",
+          stage: "model",
+          reason: "model-network",
+          agentName: "reviewer",
+          requesterSessionId: "session-xyz",
+        }),
+      );
+    });
+
+    it("records subagent provenance when resolveJudge throws an unhandled error", async () => {
+      const log = createMockLog();
+      const resolveJudge = vi.fn(async () => {
+        throw new Error("judge resolution crashed");
+      });
+      const authorize = createAuthorizer({ config: LIVE_CONFIG, resolveJudge });
+      const ask = createAsk({
+        command: undefined,
+        surface: "bash",
+        value: "cargo build",
+        agentName: "reviewer",
+        forwarding: {
+          requesterAgentName: "reviewer",
+          requesterSessionId: "session-xyz",
+        },
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "defer" });
+      expect(resolveJudge).toHaveBeenCalled();
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "cargo build",
+          verdict: "defer",
+          reason: "internal-error",
+          agentName: "reviewer",
+          requesterSessionId: "session-xyz",
+        }),
+      );
+    });
+
+    it("records subagent provenance when decide throws an internal error", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        readScript: () => {
+          throw new Error("unexpected script reading failure");
+        },
+      });
+      const ask = createAsk({
+        command: undefined,
+        surface: "bash",
+        value: "python3 test.py",
+        agentName: "reviewer",
+        forwarding: {
+          requesterAgentName: "reviewer",
+          requesterSessionId: "session-xyz",
+        },
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "defer" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "python3 test.py",
+          verdict: "defer",
+          reason: "internal-error",
+          agentName: "reviewer",
+          requesterSessionId: "session-xyz",
+        }),
+      );
+    });
+
+    it("records null provenance when decide throws an internal error for direct parent ask", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        readScript: () => {
+          throw new Error("unexpected script reading failure");
+        },
+      });
+      const ask = createAsk({
+        command: "python3 test.py",
+        surface: "bash",
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "defer" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "python3 test.py",
+          verdict: "defer",
+          reason: "internal-error",
+          agentName: null,
+          requesterSessionId: null,
+        }),
+      );
+    });
+  });
 });
