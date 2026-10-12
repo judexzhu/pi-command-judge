@@ -10,18 +10,17 @@
  */
 
 import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { Authorizer, PermissionsReadyEvent } from "@gotgenes/pi-permission-system";
+import type { PermissionsReadyEvent } from "@gotgenes/pi-permission-system";
 import { getPermissionsService, PERMISSIONS_READY_CHANNEL } from "@gotgenes/pi-permission-system";
 
+import { createAuthorizer, DECISION_EVENT, LINK_NAME, type Notifier } from "./authorizer.ts";
 import { loadConfig, resolveTextOrFile, type CommandJudgeConfig } from "./config.ts";
-import { decide, summarize } from "./decide.ts";
 import { compileExtra } from "./hard-defer.ts";
 import { createJudge, type JudgeFn } from "./judge-client.ts";
 import { composePolicy, renderUserPrompt, verdictSchema } from "./prompt.ts";
 import { readScriptSafely } from "./scripts.ts";
 
-export const LINK_NAME = "command-judge";
-const DECISION_EVENT = "command_judge.decision";
+export { DECISION_EVENT, LINK_NAME };
 const TAG = "[pi-command-judge]";
 
 interface RegistryLike {
@@ -29,10 +28,6 @@ interface RegistryLike {
   getApiKeyAndHeaders(
     model: unknown,
   ): Promise<{ ok: true; apiKey?: string; headers?: Record<string, string>; baseUrl?: string } | { ok: false; error: string }>;
-}
-
-interface Notifier {
-  notify(message: string, type?: "info" | "warning" | "error"): void;
 }
 
 export default function commandJudgeExtension(pi: ExtensionAPI): void {
@@ -69,6 +64,16 @@ export default function commandJudgeExtension(pi: ExtensionAPI): void {
       console.warn(`${TAG} no permission service for this session; is @gotgenes/pi-permission-system loaded?`);
       return;
     }
+    const authorize = createAuthorizer({
+      config,
+      extraHardDefer: extra,
+      cwd,
+      endpointHost: () => endpointHost,
+      ui,
+      judge,
+      resolveJudge,
+      readScript: readScriptSafely,
+    });
     dispose = service.registerAuthorizer(LINK_NAME, authorize);
   });
 
@@ -81,48 +86,8 @@ export default function commandJudgeExtension(pi: ExtensionAPI): void {
     judge = undefined;
   });
 
-  const authorize: Authorizer["authorize"] = async (details, _query, log) => {
-    const cfg = config;
-    if (!cfg) return { kind: "defer" };
-    const surface = details.accessIntent?.surface ?? details.surface ?? null;
-    if (surface !== "bash" || !details.command) return { kind: "defer" };
-
-    if (!judge) {
-      const resolved = await resolveJudge(cfg);
-      if ("error" in resolved) {
-        log.review(DECISION_EVENT, { requestId: details.requestId, command: details.command, verdict: "defer", reason: resolved.error });
-        return { kind: "defer" };
-      }
-      judge = resolved.judge;
-    }
-    const fn = judge;
-
-    let decision;
-    try {
-      decision = await decide(
-        { command: details.command, cwd },
-        { config: cfg, extraHardDefer: extra, judge: fn, readScript: readScriptSafely },
-      );
-    } catch (err) {
-      log.review(DECISION_EVENT, { requestId: details.requestId, verdict: "defer", reason: "internal-error", detail: String(err) });
-      return { kind: "defer" };
-    }
-
-    log.review(DECISION_EVENT, {
-      requestId: details.requestId,
-      command: details.command,
-      model: `${cfg.provider}/${cfg.model}`,
-      endpoint: endpointHost,
-      dryRun: cfg.dryRun,
-      ...decision,
-    });
-
-    if (decision.verdict === "allow") return { kind: "allow" };
-    if (cfg.notifyOnDefer && decision.stage !== "hard-defer") ui?.notify(summarize(decision), "info");
-    return { kind: "defer" };
-  };
-
-  async function resolveJudge(cfg: CommandJudgeConfig): Promise<{ judge: JudgeFn } | { error: string }> {
+  async function resolveJudge(cfg: CommandJudgeConfig): Promise<{ judge: JudgeFn; endpointHost?: string } | { error: string }> {
+    if (judge) return { judge, endpointHost };
     const model = registry?.find(cfg.provider, cfg.model);
     if (!model) return { error: "model-unresolved" };
     if (model.api !== "openai-completions" && model.api !== "openai-responses") {
@@ -138,17 +103,16 @@ export default function commandJudgeExtension(pi: ExtensionAPI): void {
     } catch {
       endpointHost = baseUrl;
     }
-    return {
-      judge: createJudge({
-        baseUrl,
-        modelId: model.id,
-        api: model.api,
-        apiKey,
-        headers: auth.headers,
-        extraBody: cfg.extraBody,
-        structuredOutput: cfg.structuredOutput,
-      }),
-    };
+    judge = createJudge({
+      baseUrl,
+      modelId: model.id,
+      api: model.api,
+      apiKey,
+      headers: auth.headers,
+      extraBody: cfg.extraBody,
+      structuredOutput: cfg.structuredOutput,
+    });
+    return { judge, endpointHost };
   }
 
   /**
