@@ -27,4 +27,11 @@ A rule or category in the static screening tier that an operator can selectively
 ### Policy Extension
 An additive prompt fragment (`extraPolicy` or `customPromptInstructions`) merged into the baseline policy or user prompt without discarding upstream safety constraints.
 
+### Forwarded Ask
+A permission ask originating from a child subagent and relayed upward to the serving parent session for centralized adjudication by the parent's authorizer chain.
+
+### Subagent Provenance
+Contextual metadata (`agentName`, `requesterSessionId`) identifying the subagent responsible for a forwarded command, recorded in decision audit logs.
+
+
 
