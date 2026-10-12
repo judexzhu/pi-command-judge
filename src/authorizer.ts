@@ -64,7 +64,11 @@ export function createAuthorizer(deps: AuthorizerDeps): Authorizer["authorize"] 
     if (!command || !command.trim()) return { kind: "defer" };
 
     const extra = resolveGetter(deps.extraHardDefer) ?? [];
-    const cwd = resolveGetter(deps.cwd) ?? process.cwd();
+    const effectiveCwd =
+      (details.accessIntent as any)?.requesterCwd ??
+      (details as any)?.requesterCwd ??
+      resolveGetter(deps.cwd) ??
+      process.cwd();
     const readScript = deps.readScript ?? readScriptSafely;
     const ui = resolveGetter(deps.ui);
 
@@ -102,13 +106,14 @@ export function createAuthorizer(deps: AuthorizerDeps): Authorizer["authorize"] 
     let decision;
     try {
       decision = await decide(
-        { command, cwd },
+        { command, cwd: effectiveCwd },
         { config: cfg, extraHardDefer: extra, judge: lazyJudge, readScript },
       );
     } catch (err) {
       log?.review?.(DECISION_EVENT, {
         requestId: details.requestId,
         command,
+        cwd: effectiveCwd,
         verdict: "defer",
         reason: "internal-error",
         detail: String(err),
@@ -119,6 +124,7 @@ export function createAuthorizer(deps: AuthorizerDeps): Authorizer["authorize"] 
     log?.review?.(DECISION_EVENT, {
       requestId: details.requestId,
       command,
+      cwd: effectiveCwd,
       model: `${cfg.provider}/${cfg.model}`,
       endpoint: endpointHost,
       dryRun: cfg.dryRun,

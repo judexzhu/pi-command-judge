@@ -1,8 +1,13 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import type { PermissionQuery, PromptPermissionDetails } from "@gotgenes/pi-permission-system";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createAuthorizer, DECISION_EVENT, LINK_NAME } from "../src/authorizer.ts";
 import { DEFAULT_CONFIG, type CommandJudgeConfig } from "../src/config.ts";
+import type { JudgeFn } from "../src/judge-client.ts";
 
 const LIVE_CONFIG: CommandJudgeConfig = { ...DEFAULT_CONFIG, dryRun: false };
 
@@ -487,6 +492,412 @@ describe("authorizer seam and forwarded ask command extraction", () => {
           command: "python3 test.py",
           verdict: "defer",
           reason: "internal-error",
+        }),
+      );
+    });
+  });
+
+  describe("scoped subagent working directory resolution and script containment", () => {
+    let tempRoot: string;
+    let parentDir: string;
+    let subagentDir: string;
+
+    beforeEach(() => {
+      tempRoot = mkdtempSync(join(tmpdir(), "pi-authorizer-test-"));
+      parentDir = join(tempRoot, "parent");
+      subagentDir = join(tempRoot, "subagent");
+      mkdirSync(parentDir, { recursive: true });
+      mkdirSync(subagentDir, { recursive: true });
+    });
+
+    afterEach(() => {
+      rmSync(tempRoot, { recursive: true, force: true });
+    });
+
+    it("resolves effective cwd from accessIntent.requesterCwd and records cwd in review log", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        cwd: parentDir,
+      });
+      const ask = createAsk({
+        surface: "bash",
+        value: "git status",
+        accessIntent: {
+          surface: "bash",
+          matchValues: ["git status"],
+          boundaryValue: null,
+          requesterCwd: subagentDir,
+        } as any,
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "git status",
+          cwd: subagentDir,
+          verdict: "allow",
+        }),
+      );
+    });
+
+    it("resolves effective cwd from details.requesterCwd when accessIntent.requesterCwd is absent", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        cwd: parentDir,
+      });
+      const ask = createAsk({
+        surface: "bash",
+        value: "git status",
+        requesterCwd: subagentDir,
+      } as any);
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "git status",
+          cwd: subagentDir,
+          verdict: "allow",
+        }),
+      );
+    });
+
+    it("falls back to deps.cwd when requesterCwd is absent in both accessIntent and details", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        cwd: parentDir,
+      });
+      const ask = createAsk({
+        surface: "bash",
+        value: "git status",
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "git status",
+          cwd: parentDir,
+          verdict: "allow",
+        }),
+      );
+    });
+
+    it("falls back to getter deps.cwd() when requesterCwd is absent", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        cwd: () => parentDir,
+      });
+      const ask = createAsk({
+        surface: "bash",
+        value: "git status",
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "git status",
+          cwd: parentDir,
+          verdict: "allow",
+        }),
+      );
+    });
+
+    it("reads, scans, and submits to judge a script inside subagent cwd (accessIntent.requesterCwd)", async () => {
+      const scriptPath = join(subagentDir, "build.sh");
+      writeFileSync(scriptPath, "#!/bin/bash\necho 'building project'\n");
+
+      const log = createMockLog();
+      const judge = vi.fn<JudgeFn>(async () => ({
+        ok: true as const,
+        decision: "allow" as const,
+        reason: "safe build script",
+        effects: {
+          reads: [],
+          writes: ["project"],
+          deletes: [],
+          network: [],
+          cluster_or_cloud: [],
+          runs_other_code: false,
+        },
+        pAllow: 0.95,
+        latencyMs: 15,
+        raw: "{}",
+      }));
+
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        cwd: parentDir,
+        judge,
+      });
+
+      const ask = createAsk({
+        surface: "bash",
+        value: "./build.sh",
+        accessIntent: {
+          surface: "bash",
+          matchValues: ["./build.sh"],
+          boundaryValue: null,
+          requesterCwd: subagentDir,
+        } as any,
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(judge).toHaveBeenCalled();
+      const judgeCall = judge.mock.calls[0]![0];
+      expect(judgeCall.user).toContain("building project");
+      expect(judgeCall.user).toContain(subagentDir);
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "./build.sh",
+          cwd: subagentDir,
+          verdict: "allow",
+          stage: "model",
+        }),
+      );
+    });
+
+    it("defers when a script inside subagent cwd violates hard static rules", async () => {
+      const scriptPath = join(subagentDir, "danger.py");
+      writeFileSync(scriptPath, "import shutil\nshutil.rmtree('/important')\n");
+
+      const log = createMockLog();
+      const judge = vi.fn();
+
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        cwd: parentDir,
+        judge,
+      });
+
+      const ask = createAsk({
+        surface: "bash",
+        value: "python3 danger.py",
+        accessIntent: {
+          surface: "bash",
+          matchValues: ["python3 danger.py"],
+          boundaryValue: null,
+          requesterCwd: subagentDir,
+        } as any,
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "defer" });
+      expect(judge).not.toHaveBeenCalled();
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "python3 danger.py",
+          cwd: subagentDir,
+          verdict: "defer",
+          stage: "script",
+          reason: "hard:script-delete",
+        }),
+      );
+    });
+
+    it("defers when script escapes subagent cwd via parent relative path (outside-cwd)", async () => {
+      const outsideScriptPath = join(tempRoot, "outside.py");
+      writeFileSync(outsideScriptPath, "print('outside')\n");
+
+      const log = createMockLog();
+      const judge = vi.fn();
+
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        cwd: parentDir,
+        judge,
+      });
+
+      const ask = createAsk({
+        surface: "bash",
+        value: "python3 ../outside.py",
+        accessIntent: {
+          surface: "bash",
+          matchValues: ["python3 ../outside.py"],
+          boundaryValue: null,
+          requesterCwd: subagentDir,
+        } as any,
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "defer" });
+      expect(judge).not.toHaveBeenCalled();
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "python3 ../outside.py",
+          cwd: subagentDir,
+          verdict: "defer",
+          stage: "script",
+          reason: "script-unreadable:outside-cwd",
+        }),
+      );
+    });
+
+    it("defers when script escapes subagent cwd via absolute path outside subagent cwd", async () => {
+      const outsideScriptPath = join(tempRoot, "outside.sh");
+      writeFileSync(outsideScriptPath, "#!/bin/bash\necho hello\n");
+
+      const log = createMockLog();
+      const judge = vi.fn();
+
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        cwd: parentDir,
+        judge,
+      });
+
+      const ask = createAsk({
+        surface: "bash",
+        value: `bash ${outsideScriptPath}`,
+        accessIntent: {
+          surface: "bash",
+          matchValues: [`bash ${outsideScriptPath}`],
+          boundaryValue: null,
+          requesterCwd: subagentDir,
+        } as any,
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "defer" });
+      expect(judge).not.toHaveBeenCalled();
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: `bash ${outsideScriptPath}`,
+          cwd: subagentDir,
+          verdict: "defer",
+          stage: "script",
+          reason: "script-unreadable:outside-cwd",
+        }),
+      );
+    });
+
+    it("defers when script is a symlink inside subagent cwd resolving outside (outside-cwd)", async () => {
+      const outsideScriptPath = join(tempRoot, "secret-outside.sh");
+      writeFileSync(outsideScriptPath, "#!/bin/bash\necho leaked\n");
+      const symlinkPath = join(subagentDir, "symlinked.sh");
+      symlinkSync(outsideScriptPath, symlinkPath);
+
+      const log = createMockLog();
+      const judge = vi.fn();
+
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        cwd: parentDir,
+        judge,
+      });
+
+      const ask = createAsk({
+        surface: "bash",
+        value: "./symlinked.sh",
+        accessIntent: {
+          surface: "bash",
+          matchValues: ["./symlinked.sh"],
+          boundaryValue: null,
+          requesterCwd: subagentDir,
+        } as any,
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "defer" });
+      expect(judge).not.toHaveBeenCalled();
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "./symlinked.sh",
+          cwd: subagentDir,
+          verdict: "defer",
+          stage: "script",
+          reason: "script-unreadable:outside-cwd",
+        }),
+      );
+    });
+
+    it("defers when script is missing in subagent cwd (not-found)", async () => {
+      const log = createMockLog();
+      const judge = vi.fn();
+
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        cwd: parentDir,
+        judge,
+      });
+
+      const ask = createAsk({
+        surface: "bash",
+        value: "python3 nonexistent.py",
+        accessIntent: {
+          surface: "bash",
+          matchValues: ["python3 nonexistent.py"],
+          boundaryValue: null,
+          requesterCwd: subagentDir,
+        } as any,
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "defer" });
+      expect(judge).not.toHaveBeenCalled();
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "python3 nonexistent.py",
+          cwd: subagentDir,
+          verdict: "defer",
+          stage: "script",
+          reason: "script-unreadable:not-found",
+        }),
+      );
+    });
+
+    it("defers when script exists in parent cwd but not subagent cwd", async () => {
+      const parentScript = join(parentDir, "only-in-parent.py");
+      writeFileSync(parentScript, "print('in parent')\n");
+
+      const log = createMockLog();
+      const judge = vi.fn();
+
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        cwd: parentDir,
+        judge,
+      });
+
+      const ask = createAsk({
+        surface: "bash",
+        value: "python3 only-in-parent.py",
+        accessIntent: {
+          surface: "bash",
+          matchValues: ["python3 only-in-parent.py"],
+          boundaryValue: null,
+          requesterCwd: subagentDir,
+        } as any,
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "defer" });
+      expect(judge).not.toHaveBeenCalled();
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "python3 only-in-parent.py",
+          cwd: subagentDir,
+          verdict: "defer",
+          stage: "script",
+          reason: "script-unreadable:not-found",
         }),
       );
     });
