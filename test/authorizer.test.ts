@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { PermissionQuery, PromptPermissionDetails } from "@gotgenes/pi-permission-system";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createAuthorizer, DECISION_EVENT, LINK_NAME } from "../src/authorizer.ts";
+import { createAuthorizer, DECISION_EVENT, extractProvenance, LINK_NAME } from "../src/authorizer.ts";
 import { DEFAULT_CONFIG, type CommandJudgeConfig } from "../src/config.ts";
 import type { JudgeFn } from "../src/judge-client.ts";
 
@@ -142,6 +142,32 @@ describe("authorizer seam and forwarded ask command extraction", () => {
       const ask = createAsk({
         command: undefined,
         surface: "bash",
+        value: "git diff",
+        accessIntent: {
+          surface: "bash",
+          matchValues: ["git diff"],
+          boundaryValue: null,
+        },
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "git diff",
+          verdict: "allow",
+          stage: "fast-allow",
+        }),
+      );
+    });
+
+    it("extracts command from details.value when details.surface is undefined but accessIntent.surface is bash", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({ config: LIVE_CONFIG });
+      const ask = createAsk({
+        command: undefined,
+        surface: undefined,
         value: "git diff",
         accessIntent: {
           surface: "bash",
@@ -543,31 +569,7 @@ describe("authorizer seam and forwarded ask command extraction", () => {
       );
     });
 
-    it("resolves effective cwd from details.requesterCwd when accessIntent.requesterCwd is absent", async () => {
-      const log = createMockLog();
-      const authorize = createAuthorizer({
-        config: LIVE_CONFIG,
-        cwd: parentDir,
-      });
-      const ask = createAsk({
-        surface: "bash",
-        value: "git status",
-        requesterCwd: subagentDir,
-      } as any);
-
-      const result = await authorize(ask, mockQuery, log as any);
-      expect(result).toEqual({ kind: "allow" });
-      expect(log.review).toHaveBeenCalledWith(
-        DECISION_EVENT,
-        expect.objectContaining({
-          command: "git status",
-          cwd: subagentDir,
-          verdict: "allow",
-        }),
-      );
-    });
-
-    it("falls back to deps.cwd when requesterCwd is absent in both accessIntent and details", async () => {
+    it("falls back to deps.cwd when requesterCwd is absent in accessIntent", async () => {
       const log = createMockLog();
       const authorize = createAuthorizer({
         config: LIVE_CONFIG,
@@ -904,6 +906,34 @@ describe("authorizer seam and forwarded ask command extraction", () => {
   });
 
   describe("subagent provenance in decision audit logs", () => {
+    it("records agentName from forwarding.requesterAgentName when details.agentName is missing", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({ config: LIVE_CONFIG });
+      const ask = createAsk({
+        command: undefined,
+        surface: "bash",
+        value: "git status",
+        agentName: null,
+        forwarding: {
+          requesterAgentName: "delegated-worker",
+          requesterSessionId: "session-xyz",
+        },
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "git status",
+          verdict: "allow",
+          stage: "fast-allow",
+          agentName: "delegated-worker",
+          requesterSessionId: "session-xyz",
+        }),
+      );
+    });
+
     it("records agentName and requesterSessionId for forwarded asks on fast-allow", async () => {
       const log = createMockLog();
       const authorize = createAuthorizer({ config: LIVE_CONFIG });
@@ -1161,6 +1191,60 @@ describe("authorizer seam and forwarded ask command extraction", () => {
           requesterSessionId: null,
         }),
       );
+    });
+  });
+
+  describe("extractProvenance helper", () => {
+    it("prefers details.agentName when present", () => {
+      const ask = createAsk({
+        agentName: "primary-worker",
+        forwarding: {
+          requesterAgentName: "forwarded-worker",
+          requesterSessionId: "sess-1",
+        },
+      });
+      expect(extractProvenance(ask)).toEqual({
+        agentName: "primary-worker",
+        requesterSessionId: "sess-1",
+      });
+    });
+
+    it("falls back to forwarding.requesterAgentName when agentName is missing or null", () => {
+      const ask = createAsk({
+        agentName: null,
+        forwarding: {
+          requesterAgentName: "forwarded-worker",
+          requesterSessionId: "sess-1",
+        },
+      });
+      expect(extractProvenance(ask)).toEqual({
+        agentName: "forwarded-worker",
+        requesterSessionId: "sess-1",
+      });
+    });
+
+    it("falls back to forwarding.requesterAgentName when agentName is undefined", () => {
+      const ask = createAsk({
+        agentName: undefined as any,
+        forwarding: {
+          requesterAgentName: "forwarded-worker",
+          requesterSessionId: "sess-1",
+        },
+      });
+      expect(extractProvenance(ask)).toEqual({
+        agentName: "forwarded-worker",
+        requesterSessionId: "sess-1",
+      });
+    });
+
+    it("returns null when neither agentName nor forwarding is provided", () => {
+      const ask = createAsk({
+        agentName: null,
+      });
+      expect(extractProvenance(ask)).toEqual({
+        agentName: null,
+        requesterSessionId: null,
+      });
     });
   });
 });

@@ -28,11 +28,22 @@ export interface AuthorizerDeps {
   extraHardDefer?: readonly RegExp[] | (() => readonly RegExp[] | undefined);
   cwd?: string | (() => string | undefined);
   judge?: JudgeFn;
-  getJudge?: () => Promise<{ judge: JudgeFn; endpointHost?: string } | { error: string }>;
   resolveJudge?: (config: CommandJudgeConfig) => Promise<{ judge: JudgeFn; endpointHost?: string } | { error: string }>;
   endpointHost?: string | (() => string | undefined);
   ui?: Notifier | (() => Notifier | undefined);
   readScript?: (ref: ScriptRef, cwd: string, maxBytes: number) => ReadScriptResult;
+}
+
+export interface Provenance {
+  agentName: string | null;
+  requesterSessionId: string | null;
+}
+
+export function extractProvenance(details: PromptPermissionDetails): Provenance {
+  return {
+    agentName: details.agentName ?? details.forwarding?.requesterAgentName ?? null,
+    requesterSessionId: details.forwarding?.requesterSessionId ?? null,
+  };
 }
 
 function resolveGetter<T>(val: T | (() => T | undefined) | undefined): T | undefined {
@@ -60,17 +71,17 @@ export function createAuthorizer(deps: AuthorizerDeps): Authorizer["authorize"] 
     const surface = details.accessIntent?.surface ?? details.surface ?? null;
     if (surface !== "bash") return { kind: "defer" };
 
-    const command = details.command ?? (details.surface === "bash" && typeof details.value === "string" ? details.value : undefined);
+    const command = details.command ?? (surface === "bash" && typeof details.value === "string" ? details.value : undefined);
     if (!command || !command.trim()) return { kind: "defer" };
 
-    const extra = resolveGetter(deps.extraHardDefer) ?? [];
+    const extraHardDeferRules = resolveGetter(deps.extraHardDefer) ?? [];
     const effectiveCwd =
-      (details.accessIntent as any)?.requesterCwd ??
-      (details as any)?.requesterCwd ??
+      (details.accessIntent as { requesterCwd?: string } | undefined)?.requesterCwd ??
       resolveGetter(deps.cwd) ??
       process.cwd();
     const readScript = deps.readScript ?? readScriptSafely;
     const ui = resolveGetter(deps.ui);
+    const { agentName, requesterSessionId } = extractProvenance(details);
 
     let endpointHost = resolveGetter(deps.endpointHost) ?? cachedEndpointHost ?? "unresolved";
 
@@ -78,16 +89,6 @@ export function createAuthorizer(deps: AuthorizerDeps): Authorizer["authorize"] 
       if (!cachedJudge) {
         if (deps.resolveJudge) {
           const res = await deps.resolveJudge(cfg);
-          if ("error" in res) {
-            return { ok: false, error: "network", detail: res.error, latencyMs: 0 };
-          }
-          cachedJudge = res.judge;
-          if (res.endpointHost) {
-            cachedEndpointHost = res.endpointHost;
-            endpointHost = res.endpointHost;
-          }
-        } else if (deps.getJudge) {
-          const res = await deps.getJudge();
           if ("error" in res) {
             return { ok: false, error: "network", detail: res.error, latencyMs: 0 };
           }
@@ -107,15 +108,15 @@ export function createAuthorizer(deps: AuthorizerDeps): Authorizer["authorize"] 
     try {
       decision = await decide(
         { command, cwd: effectiveCwd },
-        { config: cfg, extraHardDefer: extra, judge: lazyJudge, readScript },
+        { config: cfg, extraHardDefer: extraHardDeferRules, judge: lazyJudge, readScript },
       );
     } catch (err) {
       log?.review?.(DECISION_EVENT, {
         requestId: details.requestId,
         command,
         cwd: effectiveCwd,
-        agentName: details.agentName ?? null,
-        requesterSessionId: details.forwarding?.requesterSessionId ?? null,
+        agentName,
+        requesterSessionId,
         verdict: "defer",
         reason: "internal-error",
         detail: String(err),
@@ -127,8 +128,8 @@ export function createAuthorizer(deps: AuthorizerDeps): Authorizer["authorize"] 
       requestId: details.requestId,
       command,
       cwd: effectiveCwd,
-      agentName: details.agentName ?? null,
-      requesterSessionId: details.forwarding?.requesterSessionId ?? null,
+      agentName,
+      requesterSessionId,
       model: `${cfg.provider}/${cfg.model}`,
       endpoint: endpointHost,
       dryRun: cfg.dryRun,
