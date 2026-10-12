@@ -19,6 +19,7 @@ import { detectScript, type ReadScriptResult, type ScriptRef, scanScript } from 
 export interface DecideInput {
   command: string;
   cwd: string;
+  projectCwd?: string;
 }
 
 export interface DecideDeps {
@@ -82,10 +83,11 @@ export async function decide(input: DecideInput, deps: DecideDeps): Promise<Deci
     script = { path: read.path, content: read.content };
   }
 
-  const basePolicy = resolveTextOrFile(config.policy, input.cwd);
-  const extraPolicy = resolveTextOrFile(config.extraPolicy, input.cwd);
+  const policyBaseDir = input.projectCwd ?? input.cwd;
+  const basePolicy = resolveTextOrFile(config.policy, policyBaseDir);
+  const extraPolicy = resolveTextOrFile(config.extraPolicy, policyBaseDir);
   const effectiveSystemPolicy = composePolicy(basePolicy, extraPolicy);
-  const customInstructions = resolveTextOrFile(config.customPromptInstructions, input.cwd);
+  const customInstructions = resolveTextOrFile(config.customPromptInstructions, policyBaseDir);
 
   const result = await deps.judge({
     system: effectiveSystemPolicy,

@@ -63,6 +63,27 @@ describe("authorizer seam and forwarded ask command extraction", () => {
       );
     });
 
+    it("fast-allows direct parent bash asks when details.surface is undefined or null but details.command is provided", async () => {
+      const log = createMockLog();
+      const authorize = createAuthorizer({ config: LIVE_CONFIG });
+      const ask = createAsk({
+        command: "git status",
+        surface: undefined,
+        value: undefined,
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "git status",
+          verdict: "allow",
+          stage: "fast-allow",
+        }),
+      );
+    });
+
     it("hard-defers direct parent bash asks with dangerous commands", async () => {
       const log = createMockLog();
       const authorize = createAuthorizer({ config: LIVE_CONFIG });
@@ -978,6 +999,57 @@ describe("authorizer seam and forwarded ask command extraction", () => {
       );
 
       rmSync(mockAgentDir, { recursive: true, force: true });
+    });
+
+    it("resolves policy file relative to parent cwd while executing script in subagent cwd", async () => {
+      const parentPolicyPath = join(parentDir, "custom-policy.md");
+      writeFileSync(parentPolicyPath, "Special rule: always check database migrations thoroughly.");
+
+      const scriptPath = join(subagentDir, "migrate.sh");
+      writeFileSync(scriptPath, "#!/bin/bash\necho 'running migrations'\n");
+
+      const log = createMockLog();
+      const judge = vi.fn<JudgeFn>(async () => ({
+        ok: true as const,
+        decision: "allow" as const,
+        reason: "safe migration",
+        effects: {
+          reads: [],
+          writes: ["db"],
+          deletes: [],
+          network: [],
+          cluster_or_cloud: [],
+          runs_other_code: false,
+        },
+        pAllow: 0.95,
+        latencyMs: 15,
+        raw: "{}",
+      }));
+
+      const authorize = createAuthorizer({
+        config: { ...LIVE_CONFIG, policy: "custom-policy.md" },
+        cwd: parentDir,
+        judge,
+      });
+
+      const ask = createAsk({
+        surface: "bash",
+        value: "./migrate.sh",
+        accessIntent: {
+          surface: "bash",
+          matchValues: ["./migrate.sh"],
+          requesterCwd: subagentDir,
+        } as any,
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(judge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          system: expect.stringContaining("Special rule: always check database migrations thoroughly."),
+          user: expect.stringContaining("echo 'running migrations'"),
+        }),
+      );
     });
   });
 

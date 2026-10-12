@@ -123,9 +123,9 @@ export function createAuthorizer(deps: AuthorizerDeps): Authorizer["authorize"] 
     if (!cfg) return { kind: "defer" };
 
     const surface = details.accessIntent?.surface ?? details.surface ?? null;
-    if (surface !== "bash") return { kind: "defer" };
+    if (surface !== null && surface !== "bash") return { kind: "defer" };
 
-    const command = details.command ?? (typeof details.value === "string" ? details.value : undefined);
+    const command = details.command ?? (surface === "bash" && typeof details.value === "string" ? details.value : undefined);
     if (!command || !command.trim()) return { kind: "defer" };
 
     const extraHardDeferRules = deps.extraHardDefer ?? [];
@@ -162,7 +162,7 @@ export function createAuthorizer(deps: AuthorizerDeps): Authorizer["authorize"] 
     let decision;
     try {
       decision = await decide(
-        { command, cwd: effectiveCwd },
+        { command, cwd: effectiveCwd, projectCwd: fallbackCwd },
         { config: cfg, extraHardDefer: extraHardDeferRules, judge: lazyJudge, readScript },
       );
     } catch (err) {
