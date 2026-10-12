@@ -25,7 +25,8 @@
     "check": "tsc --noEmit",
     "test": "vitest run",
     "eval": "node --experimental-strip-types evals/run-evals.ts",
-    "try": "node --experimental-strip-types evals/try.ts"
+    "try": "node --experimental-strip-types evals/try.ts",
+    "prepare": "husky"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.0.0",
@@ -34,10 +35,13 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^1.1.0",
     "@types/node": "^22.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
+    "prettier": "^3.9.10",
     "typescript": "^5.9.0",
     "vitest": "^5.0.3"
   },
   "dependencies": {
-    "@gotgenes/pi-permission-system": "^40.1.1"
+    "@gotgenes/pi-permission-system": ">=40.0.0"
   }
 }
