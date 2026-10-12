@@ -3,6 +3,10 @@
  * scripts from both direct parent session asks and forwarded subagent asks.
  */
 
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import type {
   Authorizer,
   AuthorizerLog,
@@ -24,13 +28,14 @@ export interface Notifier {
 }
 
 export interface AuthorizerDeps {
-  config?: CommandJudgeConfig | (() => CommandJudgeConfig | undefined);
-  extraHardDefer?: readonly RegExp[] | (() => readonly RegExp[] | undefined);
+  config?: CommandJudgeConfig;
+  extraHardDefer?: readonly RegExp[];
   cwd?: string | (() => string | undefined);
+  agentDir?: string;
   judge?: JudgeFn;
   resolveJudge?: (config: CommandJudgeConfig) => Promise<{ judge: JudgeFn; endpointHost?: string } | { error: string }>;
   endpointHost?: string | (() => string | undefined);
-  ui?: Notifier | (() => Notifier | undefined);
+  ui?: Notifier;
   readScript?: (ref: ScriptRef, cwd: string, maxBytes: number) => ReadScriptResult;
 }
 
@@ -46,11 +51,60 @@ export function extractProvenance(details: PromptPermissionDetails): Provenance 
   };
 }
 
-function resolveGetter<T>(val: T | (() => T | undefined) | undefined): T | undefined {
-  if (typeof val === "function") {
-    return (val as () => T | undefined)();
+export function resolveRequesterCwd(
+  details: PromptPermissionDetails,
+  fallbackCwd: string,
+  agentDir?: string,
+): string {
+  const explicit =
+    (details.accessIntent as { requesterCwd?: string } | undefined)?.requesterCwd ??
+    (details as { requesterCwd?: string })?.requesterCwd ??
+    (details.forwarding as { requesterCwd?: string } | undefined)?.requesterCwd;
+  if (explicit && typeof explicit === "string") {
+    return explicit;
   }
-  return val;
+
+  if (details.requestId) {
+    try {
+      const baseDir = agentDir ?? process.env.PI_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+      const forwardingSessionsDir = join(baseDir, "sessions", "permission-forwarding", "sessions");
+      if (existsSync(forwardingSessionsDir)) {
+        for (const sessionDir of readdirSync(forwardingSessionsDir)) {
+          const reqFile = join(forwardingSessionsDir, sessionDir, "requests", `${details.requestId}.json`);
+          if (existsSync(reqFile)) {
+            const raw = readFileSync(reqFile, "utf-8");
+            const parsed = JSON.parse(raw);
+            const foundCwd = parsed?.accessIntent?.requesterCwd;
+            if (foundCwd && typeof foundCwd === "string") {
+              return foundCwd;
+            }
+          }
+        }
+      }
+    } catch {
+      // Non-fatal, fallback to default cwd
+    }
+  }
+
+  return fallbackCwd;
+}
+
+function logDecision(
+  log: AuthorizerLog | undefined,
+  details: PromptPermissionDetails,
+  command: string,
+  cwd: string,
+  provenance: Provenance,
+  payload: Record<string, unknown>,
+): void {
+  log?.review?.(DECISION_EVENT, {
+    requestId: details.requestId,
+    command,
+    cwd,
+    agentName: provenance.agentName,
+    requesterSessionId: provenance.requesterSessionId,
+    ...payload,
+  });
 }
 
 /**
@@ -65,25 +119,26 @@ export function createAuthorizer(deps: AuthorizerDeps): Authorizer["authorize"] 
     _query: PermissionQuery,
     log: AuthorizerLog,
   ): Promise<AuthorizerVerdict> => {
-    const cfg = resolveGetter(deps.config);
+    const cfg = deps.config;
     if (!cfg) return { kind: "defer" };
 
     const surface = details.accessIntent?.surface ?? details.surface ?? null;
     if (surface !== "bash") return { kind: "defer" };
 
-    const command = details.command ?? (surface === "bash" && typeof details.value === "string" ? details.value : undefined);
+    const command = details.command ?? (typeof details.value === "string" ? details.value : undefined);
     if (!command || !command.trim()) return { kind: "defer" };
 
-    const extraHardDeferRules = resolveGetter(deps.extraHardDefer) ?? [];
-    const effectiveCwd =
-      (details.accessIntent as { requesterCwd?: string } | undefined)?.requesterCwd ??
-      resolveGetter(deps.cwd) ??
-      process.cwd();
+    const extraHardDeferRules = deps.extraHardDefer ?? [];
+    const fallbackCwd = (typeof deps.cwd === "function" ? deps.cwd() : deps.cwd) ?? process.cwd();
+    const effectiveCwd = resolveRequesterCwd(details, fallbackCwd, deps.agentDir);
     const readScript = deps.readScript ?? readScriptSafely;
-    const ui = resolveGetter(deps.ui);
-    const { agentName, requesterSessionId } = extractProvenance(details);
+    const ui = deps.ui;
+    const provenance = extractProvenance(details);
 
-    let endpointHost = resolveGetter(deps.endpointHost) ?? cachedEndpointHost ?? "unresolved";
+    let endpointHost =
+      (typeof deps.endpointHost === "function" ? deps.endpointHost() : deps.endpointHost) ??
+      cachedEndpointHost ??
+      "unresolved";
 
     const lazyJudge: JudgeFn = async (req) => {
       if (!cachedJudge) {
@@ -111,25 +166,16 @@ export function createAuthorizer(deps: AuthorizerDeps): Authorizer["authorize"] 
         { config: cfg, extraHardDefer: extraHardDeferRules, judge: lazyJudge, readScript },
       );
     } catch (err) {
-      log?.review?.(DECISION_EVENT, {
-        requestId: details.requestId,
-        command,
-        cwd: effectiveCwd,
-        agentName,
-        requesterSessionId,
+      logDecision(log, details, command, effectiveCwd, provenance, {
         verdict: "defer",
+        stage: "internal-error",
         reason: "internal-error",
         detail: String(err),
       });
       return { kind: "defer" };
     }
 
-    log?.review?.(DECISION_EVENT, {
-      requestId: details.requestId,
-      command,
-      cwd: effectiveCwd,
-      agentName,
-      requesterSessionId,
+    logDecision(log, details, command, effectiveCwd, provenance, {
       model: `${cfg.provider}/${cfg.model}`,
       endpoint: endpointHost,
       dryRun: cfg.dryRun,

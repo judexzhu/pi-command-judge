@@ -903,6 +903,82 @@ describe("authorizer seam and forwarded ask command extraction", () => {
         }),
       );
     });
+
+    it("resolves subagent cwd from filesystem request record when in-memory accessIntent strips requesterCwd", async () => {
+      const scriptPath = join(subagentDir, "disk-run.sh");
+      writeFileSync(scriptPath, "#!/bin/bash\necho 'from subagent disk'\n");
+
+      const mockAgentDir = mkdtempSync(join(tmpdir(), "pi-agent-dir-"));
+      const reqDir = join(mockAgentDir, "sessions", "permission-forwarding", "sessions", "test-session", "requests");
+      mkdirSync(reqDir, { recursive: true });
+      const reqId = "req-disk-lookup-42";
+      writeFileSync(
+        join(reqDir, `${reqId}.json`),
+        JSON.stringify({
+          id: reqId,
+          accessIntent: {
+            surface: "bash",
+            matchValues: ["./disk-run.sh"],
+            requesterCwd: subagentDir,
+          },
+        }),
+      );
+
+      const log = createMockLog();
+      const judge = vi.fn<JudgeFn>(async () => ({
+        ok: true as const,
+        decision: "allow" as const,
+        reason: "safe disk-run script",
+        effects: {
+          reads: [],
+          writes: [],
+          deletes: [],
+          network: [],
+          cluster_or_cloud: [],
+          runs_other_code: false,
+        },
+        pAllow: 0.99,
+        latencyMs: 12,
+        raw: "{}",
+      }));
+
+      const authorize = createAuthorizer({
+        config: LIVE_CONFIG,
+        cwd: parentDir,
+        agentDir: mockAgentDir,
+        judge,
+      });
+
+      // Simulates real runtime where toAccessFacts stripped requesterCwd from details.accessIntent
+      const ask = createAsk({
+        requestId: reqId,
+        surface: "bash",
+        value: "./disk-run.sh",
+        accessIntent: {
+          surface: "bash",
+          matchValues: ["./disk-run.sh"],
+          boundaryValue: null,
+        } as any,
+      });
+
+      const result = await authorize(ask, mockQuery, log as any);
+      expect(result).toEqual({ kind: "allow" });
+      expect(judge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user: expect.stringContaining("echo 'from subagent disk'"),
+        }),
+      );
+      expect(log.review).toHaveBeenCalledWith(
+        DECISION_EVENT,
+        expect.objectContaining({
+          command: "./disk-run.sh",
+          cwd: subagentDir,
+          verdict: "allow",
+        }),
+      );
+
+      rmSync(mockAgentDir, { recursive: true, force: true });
+    });
   });
 
   describe("subagent provenance in decision audit logs", () => {

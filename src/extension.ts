@@ -68,6 +68,7 @@ export default function commandJudgeExtension(pi: ExtensionAPI): void {
       config,
       extraHardDefer: extra,
       cwd,
+      agentDir: getAgentDir(),
       endpointHost: () => endpointHost,
       ui,
       judge,
